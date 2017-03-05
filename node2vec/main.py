@@ -14,6 +14,9 @@ import numpy as np
 import networkx as nx
 import node2vec
 from gensim.models import Word2Vec
+import json
+from scipy.io import loadmat
+import time
 
 def parse_args():
 	'''
@@ -61,22 +64,44 @@ def parse_args():
 	parser.add_argument('--undirected', dest='undirected', action='store_false')
 	parser.set_defaults(directed=False)
 
-	return parser.parse_args()
+	args = parser.parse_args()
+	print json.dumps(vars(args), indent=1)
+	return args
 
 def read_graph():
 	'''
 	Reads the input network in networkx.
 	'''
-	if args.weighted:
-		G = nx.read_edgelist(args.input, nodetype=int, data=(('weight',float),), create_using=nx.DiGraph())
+	if 'blogcat' not in args.input.lower():
+		if args.weighted:
+			G = nx.read_edgelist(args.input, nodetype=int, data=(('weight',float),), 
+			                     create_using=nx.DiGraph())
+		else:
+			G = nx.read_edgelist(args.input, nodetype=int, create_using=nx.DiGraph())
+			for edge in G.edges():
+				G[edge[0]][edge[1]]['weight'] = 1
+
 	else:
-		G = nx.read_edgelist(args.input, nodetype=int, create_using=nx.DiGraph())
-		for edge in G.edges():
-			G[edge[0]][edge[1]]['weight'] = 1
+		if args.weighted:
+			raise Exception("Weighted edges not currently supported (all are set to 1).")
+
+		print('Creating BlogCatalog graph from mat file...')
+
+		G = nx.DiGraph(nodetype=int)
+		
+		t0 = time.time()
+		mat = loadmat('/home/jimmie/git/deepwalk/example_graphs/blogcatalog.mat')
+		X = mat['network']
+		cx = X.tocoo()
+		for i,j,v in zip(cx.row, cx.col, cx.data):
+			G.add_edge(i, j, {'weight': 1})
+		print('time: %.3f min' % (float(time.time()-t0)/60.))
 
 	if not args.directed:
-		G = G.to_undirected()
-
+		print('Making graph undirected...')
+		G= G.to_undirected()
+		
+	print nx.info(G)
 	return G
 
 def learn_embeddings(walks):
@@ -85,7 +110,7 @@ def learn_embeddings(walks):
 	'''
 	walks = [map(str, walk) for walk in walks]
 	model = Word2Vec(walks, size=args.dimensions, window=args.window_size, min_count=0, sg=1, workers=args.workers, iter=args.iter)
-	model.save_word2vec_format(args.output)
+	model.wv.save_word2vec_format(args.output)
 	
 	return
 
@@ -95,9 +120,21 @@ def main(args):
 	'''
 	nx_G = read_graph()
 	G = node2vec.Graph(nx_G, args.directed, args.p, args.q)
+	
+	t0 = time.time()
+	print('preprocessing...')
 	G.preprocess_transition_probs()
+	print('time: %.3f min' % (float(time.time()-t0)/60.))
+
+	t0 = time.time()
+	print('simulating_walks...')
 	walks = G.simulate_walks(args.num_walks, args.walk_length)
+	print('time: %.3f min' % (float(time.time()-t0)/60.))
+
+	t0 = time.time()
+	print('learning_embeddings...')
 	learn_embeddings(walks)
+	print('time: %.3f min' % (float(time.time()-t0)/60.))
 
 if __name__ == "__main__":
 	args = parse_args()
